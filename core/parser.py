@@ -26,3 +26,12 @@ def iter_table_aliases(ast: exp.Expression) -> Iterator[exp.TableAlias]:
 
 def iter_column_aliases(ast: exp.Expression) -> Iterator[exp.Alias]:
     yield from ast.find_all(exp.Alias)
+
+
+def iter_schema_column_identifiers(ast: exp.Expression) -> Iterator[exp.Identifier]:
+    """INSERT INTO t (a, b) VALUES (...) 의 (a, b)처럼 Column이 아니라
+    Schema.expressions에 바로 담기는 컬럼 식별자들을 찾는다."""
+    for schema in ast.find_all(exp.Schema):
+        for e in schema.expressions:
+            if isinstance(e, exp.Identifier):
+                yield e

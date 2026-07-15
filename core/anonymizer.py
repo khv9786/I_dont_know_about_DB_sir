@@ -50,6 +50,9 @@ def _collect_renames(ast: exp.Expression, project: ProjectMapping) -> list[Edit]
     for alias_node in parser.iter_column_aliases(ast):
         _add_identifier_edit(edits, project, alias_node.args.get("alias"), "ALIAS")
 
+    for schema_ident in parser.iter_schema_column_identifiers(ast):
+        _add_identifier_edit(edits, project, schema_ident, "COLUMN")
+
     return edits
 
 
@@ -60,14 +63,8 @@ def _splice(text: str, edits: list[Edit]) -> str:
     return text
 
 
-def anonymize(sql: str, project: ProjectMapping, dialect: str | None = None) -> tuple[str, int]:
-    """반환값: (익명화된 SQL, 감지된 동적 태그 개수).
-
-    sqlglot의 AST/재생성(ast.sql())은 쓰지 않는다 — 식별자가 원문 몇 번째 문자에
-    있는지 찾는 용도로만 sqlglot을 쓰고, 그 위치를 원문에서 직접 잘라 바꿔치기한다.
-    그래서 원본 서식·주석 위치·동적 태그 위치가 전부 그대로 유지된다.
-    """
-    masked = mapper_xml.mask_all_comments(sql, project)
+def _anonymize_fragment(masked: str, project: ProjectMapping, dialect: str | None) -> tuple[str, int]:
+    """주석 마스킹이 이미 끝난 조각(단일 <select> 요소 또는 순수 SQL) 하나를 처리한다."""
     prefix, inner, suffix = mapper_xml.strip_outer_tag(masked)
     inner = mapper_xml.unwrap_cdata(inner)
     dynamic_tag_count = mapper_xml.count_dynamic_tags(inner)
@@ -83,3 +80,33 @@ def anonymize(sql: str, project: ProjectMapping, dialect: str | None = None) -> 
     result = mapper_xml.restore_bind_var_placeholders(result, bind_specs)
     result = mapper_xml.unmask_dynamic_tags(result)
     return f"{prefix}{result}{suffix}", dynamic_tag_count
+
+
+def anonymize(sql: str, project: ProjectMapping, dialect: str | None = None) -> tuple[str, int]:
+    """반환값: (익명화된 SQL, 감지된 동적 태그 개수).
+
+    sqlglot의 AST/재생성(ast.sql())은 쓰지 않는다 — 식별자가 원문 몇 번째 문자에
+    있는지 찾는 용도로만 sqlglot을 쓰고, 그 위치를 원문에서 직접 잘라 바꿔치기한다.
+    그래서 원본 서식·주석 위치·동적 태그 위치가 전부 그대로 유지된다.
+
+    <select>/<insert>/<update>/<delete>/<sql> 요소가 여러 개 있는 XML 파일 전체를
+    붙여넣어도, 각 요소를 찾아 개별 처리한 뒤 원래 순서/사이 공백 그대로 재조립한다.
+    프로젝트 매핑은 파일 전체에서 공유되므로 여러 쿼리에 걸쳐 같은 이름은 같은 토큰이 된다.
+    """
+    masked = mapper_xml.mask_all_comments(sql, project)
+    spans = mapper_xml.find_query_elements(masked)
+
+    if not spans:
+        return _anonymize_fragment(masked, project, dialect)
+
+    pieces: list[str] = []
+    last_end = 0
+    total_dynamic_tag_count = 0
+    for start, end in spans:
+        pieces.append(masked[last_end:start])
+        processed, dyn = _anonymize_fragment(masked[start:end], project, dialect)
+        pieces.append(processed)
+        total_dynamic_tag_count += dyn
+        last_end = end
+    pieces.append(masked[last_end:])
+    return "".join(pieces), total_dynamic_tag_count

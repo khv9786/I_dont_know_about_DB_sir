@@ -26,13 +26,45 @@ def strip_outer_tag(text: str) -> tuple[str, str, str]:
     """<select ...>...</select> 형태면 (여는태그, 내부내용, 닫는태그)를 반환한다.
 
     태그 앞에 whitespace나 (이미 마스킹된) 리딩 주석이 있어도 prefix로 흡수한다.
-    여러 statement를 담은 XML(<sqlMap>에 <select>가 여러 개)은 지원 범위 밖이다.
+    text 전체가 단일 요소일 때 쓴다 — 여러 요소가 섞인 파일은 find_query_elements로
+    먼저 요소 단위로 잘라낸 뒤 각 조각에 대해 이 함수를 호출한다.
     """
     match = _OUTER_TAG_PATTERN.search(text)
     if not match:
         return "", text, ""
     prefix = text[: match.start()]
     return prefix + match.group(1), match.group(3), match.group(4)
+
+
+_STATEMENT_TAG_NAMES = ("select", "insert", "update", "delete", "sql")
+_STATEMENT_OPEN_PATTERN = re.compile(
+    r"<(" + "|".join(_STATEMENT_TAG_NAMES) + r")\b(?:\s[^<>]*)?>",
+    re.IGNORECASE,
+)
+
+
+def find_query_elements(text: str) -> list[tuple[int, int]]:
+    """<select>/<insert>/<update>/<delete>/<sql> 최상위 요소들의 (시작, 끝) 오프셋 목록을 찾는다.
+
+    이 태그들끼리는 서로 중첩되지 않는다는 iBatis/MyBatis 매퍼 관례를 전제로,
+    각 여는 태그 뒤에서 처음 만나는 같은 이름의 닫는 태그를 그 요소의 끝으로 본다.
+    <sqlMap>/<mapper> 같은 루트 래퍼나 요소 사이 공백은 여기서 다루지 않고
+    호출부가 그대로 원문 유지한다.
+    """
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    while True:
+        open_match = _STATEMENT_OPEN_PATTERN.search(text, pos)
+        if not open_match:
+            break
+        tagname = open_match.group(1)
+        close_pattern = re.compile(r"</\s*" + re.escape(tagname) + r"\s*>", re.IGNORECASE)
+        close_match = close_pattern.search(text, open_match.end())
+        if not close_match:
+            break
+        spans.append((open_match.start(), close_match.end()))
+        pos = close_match.end()
+    return spans
 
 
 def unwrap_cdata(text: str) -> str:
