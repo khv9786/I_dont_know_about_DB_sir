@@ -66,6 +66,20 @@ class App(tk.Tk):
         self.anon_input = tk.Text(parent, height=15, wrap="word")
         self.anon_input.pack(fill="both", expand=True, pady=(0, 4))
 
+        mode_row = ttk.Frame(parent)
+        mode_row.pack(fill="x", pady=(0, 4))
+        ttk.Label(mode_row, text="모드:").pack(side="left")
+        self.anon_mode = tk.StringVar(value="mybatis")
+        ttk.Radiobutton(
+            mode_row, text="MyBatis 매퍼", variable=self.anon_mode, value="mybatis"
+        ).pack(side="left", padx=4)
+        ttk.Radiobutton(
+            mode_row,
+            text="단순 SQL (리터럴 값도 익명화)",
+            variable=self.anon_mode,
+            value="plain",
+        ).pack(side="left", padx=4)
+
         btn_row = ttk.Frame(parent)
         btn_row.pack(fill="x", pady=4)
         ttk.Button(btn_row, text="익명화 실행", command=self._on_anonymize).pack(side="left")
@@ -106,8 +120,9 @@ class App(tk.Tk):
         sql = self.anon_input.get("1.0", "end").strip()
         if not sql:
             return
+        anonymize_literals = self.anon_mode.get() == "plain"
         try:
-            result, dynamic_tag_count = anonymize(sql, project)
+            result, dynamic_tag_count = anonymize(sql, project, anonymize_literals=anonymize_literals)
         except Exception as exc:
             messagebox.showerror("QueryAnon", f"익명화 실패 (SQL 파싱 오류 가능성):\n{exc}")
             return

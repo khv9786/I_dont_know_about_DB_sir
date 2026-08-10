@@ -24,7 +24,24 @@ def _add_identifier_edit(
     edits.append((start, end, token if token is not None else _get_or_create(project, category, ident.name)))
 
 
-def _collect_renames(ast: exp.Expression, project: ProjectMapping) -> list[Edit]:
+def _add_literal_edit(edits: list[Edit], project: ProjectMapping, literal: exp.Literal) -> None:
+    """문자열 리터럴 하나를 VALUE 카테고리로 토큰화한다.
+
+    literal.meta의 start/end는 따옴표까지 포함한 span이므로(sqlglot 30.12.0 확인됨),
+    치환문에도 작은따옴표를 직접 씌워 유효한 SQL 문자열 리터럴 형태를 유지한다.
+    """
+    if not literal.name or mapper_xml.is_bindvar_placeholder(literal.name):
+        return
+    start, end = literal.meta.get("start"), literal.meta.get("end")
+    if start is None or end is None:
+        return
+    token = _get_or_create(project, "VALUE", literal.name)
+    edits.append((start, end, f"'{token}'"))
+
+
+def _collect_renames(
+    ast: exp.Expression, project: ProjectMapping, anonymize_literals: bool = False
+) -> list[Edit]:
     """AST는 건드리지 않고, (원문 시작, 원문 끝, 치환할 토큰) 목록만 모은다."""
     edits: list[Edit] = []
 
@@ -53,6 +70,11 @@ def _collect_renames(ast: exp.Expression, project: ProjectMapping) -> list[Edit]
     for schema_ident in parser.iter_schema_column_identifiers(ast):
         _add_identifier_edit(edits, project, schema_ident, "COLUMN")
 
+    if anonymize_literals:
+        for literal in ast.find_all(exp.Literal):
+            if literal.is_string:
+                _add_literal_edit(edits, project, literal)
+
     return edits
 
 
@@ -63,7 +85,9 @@ def _splice(text: str, edits: list[Edit]) -> str:
     return text
 
 
-def _anonymize_fragment(masked: str, project: ProjectMapping, dialect: str | None) -> tuple[str, int]:
+def _anonymize_fragment(
+    masked: str, project: ProjectMapping, dialect: str | None, anonymize_literals: bool = False
+) -> tuple[str, int]:
     """주석 마스킹이 이미 끝난 조각(단일 <select> 요소 또는 순수 SQL) 하나를 처리한다."""
     prefix, inner, suffix = mapper_xml.strip_outer_tag(masked)
     inner = mapper_xml.unwrap_cdata(inner)
@@ -74,7 +98,7 @@ def _anonymize_fragment(masked: str, project: ProjectMapping, dialect: str | Non
     statements = parser.parse_all(inner, dialect=dialect)
     edits: list[Edit] = []
     for ast in statements:
-        edits.extend(_collect_renames(ast, project))
+        edits.extend(_collect_renames(ast, project, anonymize_literals=anonymize_literals))
     result = _splice(inner, edits)
 
     result = mapper_xml.restore_bind_var_placeholders(result, bind_specs)
@@ -82,7 +106,12 @@ def _anonymize_fragment(masked: str, project: ProjectMapping, dialect: str | Non
     return f"{prefix}{result}{suffix}", dynamic_tag_count
 
 
-def anonymize(sql: str, project: ProjectMapping, dialect: str | None = None) -> tuple[str, int]:
+def anonymize(
+    sql: str,
+    project: ProjectMapping,
+    dialect: str | None = None,
+    anonymize_literals: bool = False,
+) -> tuple[str, int]:
     """반환값: (익명화된 SQL, 감지된 동적 태그 개수).
 
     sqlglot의 AST/재생성(ast.sql())은 쓰지 않는다 — 식별자가 원문 몇 번째 문자에
@@ -92,19 +121,26 @@ def anonymize(sql: str, project: ProjectMapping, dialect: str | None = None) -> 
     <select>/<insert>/<update>/<delete>/<sql> 요소가 여러 개 있는 XML 파일 전체를
     붙여넣어도, 각 요소를 찾아 개별 처리한 뒤 원래 순서/사이 공백 그대로 재조립한다.
     프로젝트 매핑은 파일 전체에서 공유되므로 여러 쿼리에 걸쳐 같은 이름은 같은 토큰이 된다.
+
+    anonymize_literals=True("단순 SQL" 모드)면 문자열 리터럴(예: '홍길동')도 VALUE
+    카테고리로 토큰화한다. MyBatis 매퍼는 실제 값이 보통 바인드 변수(#{})로 빠져있어
+    기본값(False)을 쓰며, 켤 경우 'Y'/'N' 같은 상태 플래그 리터럴까지 토큰화되어
+    매퍼 가독성이 떨어질 수 있다.
     """
     masked = mapper_xml.mask_all_comments(sql, project)
     spans = mapper_xml.find_query_elements(masked)
 
     if not spans:
-        return _anonymize_fragment(masked, project, dialect)
+        return _anonymize_fragment(masked, project, dialect, anonymize_literals=anonymize_literals)
 
     pieces: list[str] = []
     last_end = 0
     total_dynamic_tag_count = 0
     for start, end in spans:
         pieces.append(masked[last_end:start])
-        processed, dyn = _anonymize_fragment(masked[start:end], project, dialect)
+        processed, dyn = _anonymize_fragment(
+            masked[start:end], project, dialect, anonymize_literals=anonymize_literals
+        )
         pieces.append(processed)
         total_dynamic_tag_count += dyn
         last_end = end

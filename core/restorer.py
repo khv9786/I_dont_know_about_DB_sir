@@ -4,7 +4,7 @@ import re
 
 from storage.models import ProjectMapping
 
-_TOKEN_PATTERN = re.compile(r"\b(?:TBL|COL|ALIAS|CMT)_\d+\b", re.IGNORECASE)
+_TOKEN_PATTERN = re.compile(r"\b(?:TBL|COL|ALIAS|CMT|VAL)_\d+\b", re.IGNORECASE)
 
 
 def _restore_xml_comments(text: str, project: ProjectMapping) -> str:

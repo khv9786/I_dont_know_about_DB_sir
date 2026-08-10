@@ -20,6 +20,17 @@ _CDATA_PATTERN = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.DOTALL)
 
 _BIND_VAR_PATTERN = re.compile(r"#\{(\w+)\}|#(\w+)#|\$\{(\w+)\}")
 _TEMP_PLACEHOLDER = "__QA_BINDVAR_{index}__"
+_BINDVAR_PLACEHOLDER_PATTERN = re.compile(r"^__QA_BINDVAR_\d+__$")
+
+
+def is_bindvar_placeholder(value: str) -> bool:
+    """protect_bind_vars가 심어둔 임시 문자열 리터럴인지 판별한다.
+
+    단순 SQL 모드의 리터럴 익명화가 이 임시 플레이스홀더까지 VALUE 토큰으로
+    덮어써버리면 restore_bind_var_placeholders가 원래 바인드 변수명을 찾지
+    못하게 되므로, 리터럴 순회 단계에서 이 값들을 걸러내는 용도로 쓴다.
+    """
+    return bool(_BINDVAR_PLACEHOLDER_PATTERN.fullmatch(value))
 
 
 def strip_outer_tag(text: str) -> tuple[str, str, str]:

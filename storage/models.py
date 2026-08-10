@@ -3,13 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-Category = Literal["TABLE", "COLUMN", "ALIAS", "COMMENT"]
+Category = Literal["TABLE", "COLUMN", "ALIAS", "COMMENT", "VALUE"]
 
 TOKEN_PREFIX: dict[Category, str] = {
     "TABLE": "TBL",
     "COLUMN": "COL",
     "ALIAS": "ALIAS",
     "COMMENT": "CMT",
+    "VALUE": "VAL",
 }
 
 
