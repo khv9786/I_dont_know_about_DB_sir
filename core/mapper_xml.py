@@ -78,6 +78,91 @@ def find_query_elements(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+_STATEMENT_KEYWORD_PATTERN = re.compile(
+    r"^[ \t]*(select|insert|update|delete|with|merge|replace|create|alter|drop)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+_PRECEDING_WORD_PATTERN = re.compile(r"([a-zA-Z_][a-zA-Z_0-9]*)\s*$")
+_SET_COMBINATOR_WORDS = {"union", "intersect", "except", "minus", "all", "distinct"}
+
+
+def _top_level_mask(text: str) -> list[bool]:
+    """각 문자 위치가 괄호/문자열/주석 밖(최상위, depth 0)인지 표시한다.
+
+    find_plain_statement_spans가 서브쿼리나 문자열 리터럴 안의 SELECT 등을
+    문장 경계로 오인하지 않도록 하는 용도다.
+    """
+    mask = [False] * len(text)
+    depth = 0
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            while i < n:
+                if text[i] == quote:
+                    if i + 1 < n and text[i + 1] == quote:
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = end + 2 if end != -1 else n
+            continue
+        if text.startswith("--", i):
+            end = text.find("\n", i)
+            i = end if end != -1 else n
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        else:
+            mask[i] = depth == 0
+        i += 1
+    return mask
+
+
+def find_plain_statement_spans(text: str) -> list[tuple[int, int]]:
+    """세미콜론 없이(혹은 일부만) 줄바꿈으로만 이어붙인 여러 SQL 문장을 각각의
+    (시작, 끝) 오프셋으로 나눈다.
+
+    parser.parse_all이 세미콜론 부족으로 ParseError를 낼 때만 anonymizer가
+    복구 경로로 호출한다 — 정상 파싱되는 입력(제대로 된 ;, 단일 문장)은 이 함수를
+    거치지 않고 기존 경로 그대로 처리된다.
+
+    최상위(depth 0)에서 줄이 SELECT/INSERT/UPDATE/DELETE/WITH/MERGE/REPLACE로
+    시작하면 새 문장의 시작으로 본다. 단 그 직전 최상위 단어가 UNION/INTERSECT/
+    EXCEPT/MINUS/ALL/DISTINCT면 집합 연산으로 이어지는 같은 문장이므로 분리하지 않는다.
+    문장 경계를 2개 미만으로 찾으면(=이 휴리스틱으로도 답이 안 나오면) 빈 리스트를
+    반환해 호출부가 원래 ParseError를 그대로 올리게 한다.
+    """
+    top_level = _top_level_mask(text)
+    candidates: list[int] = []
+    for match in _STATEMENT_KEYWORD_PATTERN.finditer(text):
+        kw_start = match.start(1)
+        if not top_level[kw_start]:
+            continue
+        preceding = text[: match.start()].rstrip()
+        word_match = _PRECEDING_WORD_PATTERN.search(preceding)
+        if word_match and word_match.group(1).lower() in _SET_COMBINATOR_WORDS:
+            continue
+        candidates.append(kw_start)
+
+    if len(candidates) < 2:
+        return []
+
+    spans: list[tuple[int, int]] = []
+    for idx, start in enumerate(candidates):
+        end = candidates[idx + 1] if idx + 1 < len(candidates) else len(text)
+        spans.append((start, end))
+    return spans
+
+
 def unwrap_cdata(text: str) -> str:
     """<![CDATA[ >= ]]> 는 보통 '<'/'>' 를 포함한 SQL 비교연산자를 XML 이스케이프한 것이다.
 

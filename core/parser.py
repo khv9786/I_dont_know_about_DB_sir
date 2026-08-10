@@ -20,6 +20,12 @@ def iter_columns(ast: exp.Expression) -> Iterator[exp.Column]:
     yield from ast.find_all(exp.Column)
 
 
+def iter_column_defs(ast: exp.Expression) -> Iterator[exp.ColumnDef]:
+    """CREATE TABLE의 컬럼 정의(예: "id INT")를 찾는다. SELECT/WHERE 등에서 컬럼을
+    '참조'하는 exp.Column과 달리, 컬럼을 '정의'하는 노드라 별도로 순회해야 한다."""
+    yield from ast.find_all(exp.ColumnDef)
+
+
 def iter_table_aliases(ast: exp.Expression) -> Iterator[exp.TableAlias]:
     yield from ast.find_all(exp.TableAlias)
 

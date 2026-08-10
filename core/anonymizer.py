@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from sqlglot import exp
+from sqlglot.errors import ParseError
 
-from core import mapper_xml, parser
+from core import ddl_parser, mapper_xml, parser
 from core.token_generator import get_or_create as _get_or_create
 from storage.models import Category, ProjectMapping
 
@@ -63,6 +64,9 @@ def _collect_renames(
             if token is None:
                 token = _get_or_create(project, "ALIAS", qualifier)
             _add_identifier_edit(edits, project, qualifier_ident, "ALIAS", token=token)
+
+    for column_def in parser.iter_column_defs(ast):
+        _add_identifier_edit(edits, project, column_def.args.get("this"), "COLUMN")
 
     for alias_node in parser.iter_column_aliases(ast):
         _add_identifier_edit(edits, project, alias_node.args.get("alias"), "ALIAS")
@@ -131,7 +135,19 @@ def anonymize(
     spans = mapper_xml.find_query_elements(masked)
 
     if not spans:
-        return _anonymize_fragment(masked, project, dialect, anonymize_literals=anonymize_literals)
+        try:
+            return _anonymize_fragment(masked, project, dialect, anonymize_literals=anonymize_literals)
+        except ParseError:
+            # 세미콜론 없이 줄바꿈으로만 이어붙인 여러 SQL 문장일 수 있다 — 문장 경계를
+            # 찾아 복구를 시도하고, 그마저 안 되면 원래 에러를 그대로 올린다.
+            spans = mapper_xml.find_plain_statement_spans(masked)
+            if not spans:
+                # Oracle STORAGE/PCTFREE/TABLESPACE 등 sqlglot이 이해 못하는 DDL
+                # 저장 옵션 때문일 수 있다 — CREATE TABLE 전용 경량 추출기로 재시도.
+                ddl_result = ddl_parser.try_anonymize_create_table(masked, project)
+                if ddl_result is not None:
+                    return ddl_result, 0
+                raise
 
     pieces: list[str] = []
     last_end = 0
